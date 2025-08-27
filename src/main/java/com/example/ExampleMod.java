@@ -19,63 +19,131 @@ public class ExampleMod implements ModInitializer {
 	public static final String MOD_ID = "modid";
 	public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
-	private static final Path CONFIG_PATH = Paths.get("config", MOD_ID + "_aliases.json");
+	private static final Path CONFIG_PATH = Paths.get("config", "CommandMaker", "aliases.json");
 	private static final Map<String, String> aliases = new HashMap<>();
-
+	// Store per-player custom variables: player UUID -> (varName -> value)
+	private static final Map<UUID, Map<String, String>> playerVariables = new HashMap<>();
 	@Override
 	public void onInitialize() {
+		ensureConfigExists();
 		loadAliases();
 		CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
 			registerAddCommand(dispatcher);
 			registerAliases(dispatcher);
+			registerSetCmdVariable(dispatcher);
 		});
 		LOGGER.info("Alias mod initialized!");
 	}
 
+	// Ensure config folder and aliases.json exist, create with example if not
+	private void ensureConfigExists() {
+		try {
+			Path folder = CONFIG_PATH.getParent();
+			if (!Files.exists(folder)) {
+				Files.createDirectories(folder);
+			}
+			if (!Files.exists(CONFIG_PATH)) {
+				List<String> lines = new ArrayList<>();
+				lines.add("# CommandMaker Aliases Config");
+				lines.add("# Each entry is an alias and its command target.");
+				lines.add("# You can use variables like ${player}, ${x}, ${y}, ${z} in the command.");
+				lines.add("# You can use argument variables like ${1}, ${2}, ... for user-supplied arguments.");
+				lines.add("# To run multiple commands, use a JSON array as the value for the alias.");
+				lines.add("# Example:");
+				lines.add("#   teleport: 'tp ${player} 0 100 0'");
+				lines.add("#   greet: 'say Hello, ${player}!'");
+				lines.add("#   kit: ['give ${player} diamond_sword 1', 'give ${player} diamond_helmet 1']");
+				lines.add("#   giveme: 'give ${player} ${1} ${2}'");
+				lines.add("{");
+				lines.add("}");
+				Files.write(CONFIG_PATH, lines, StandardOpenOption.CREATE_NEW);
+			}
+		} catch (Exception e) {
+			LOGGER.error("Failed to create config folder or file", e);
+		}
+	}
+
+	// Register /addcommand (reload|add|del) ...
 	private void registerAddCommand(CommandDispatcher<ServerCommandSource> dispatcher) {
 		dispatcher.register(
 			LiteralArgumentBuilder.<ServerCommandSource>literal("addcommand")
-				.then(net.minecraft.server.command.CommandManager.literal("reload")
-					.executes(ctx -> {
-						loadAliases();
-						registerAliases(dispatcher);
-						ctx.getSource().sendFeedback(() -> net.minecraft.text.Text.literal("Aliases reloaded."), false);
-						return 1;
-					})
-				)
-				.then(net.minecraft.server.command.CommandManager.literal("add")
-					.then(net.minecraft.server.command.CommandManager.argument("alias", StringArgumentType.word())
-						.then(net.minecraft.server.command.CommandManager.argument("target", StringArgumentType.greedyString())
-							.executes(ctx -> {
-								String alias = StringArgumentType.getString(ctx, "alias");
-								String target = StringArgumentType.getString(ctx, "target");
-								aliases.put(alias, target);
-								saveAliases();
-								registerAlias(dispatcher, alias, target);
-								ctx.getSource().sendFeedback(() -> net.minecraft.text.Text.literal("Alias /" + alias + " -> " + target + " added."), false);
-								return 1;
-							})
-						)
-					)
-				)
-				.then(net.minecraft.server.command.CommandManager.literal("del")
-					.then(net.minecraft.server.command.CommandManager.argument("alias", StringArgumentType.word())
+				.then(
+					net.minecraft.server.command.CommandManager.literal("reload")
 						.executes(ctx -> {
-							String alias = StringArgumentType.getString(ctx, "alias");
-							if (aliases.remove(alias) != null) {
-								saveAliases();
-								// Remove the command node from dispatcher
+							loadAliases();
+							// Remove all old aliases from dispatcher before re-registering
+							for (String alias : new HashSet<>(aliases.keySet())) {
 								dispatcher.getRoot().getChildren().removeIf(node -> node.getName().equals(alias));
-								ctx.getSource().sendFeedback(() -> net.minecraft.text.Text.literal("Alias /" + alias + " removed."), false);
-							} else {
-								ctx.getSource().sendFeedback(() -> net.minecraft.text.Text.literal("Alias /" + alias + " not found."), false);
 							}
+							registerAliases(dispatcher);
+							ctx.getSource().sendFeedback(() -> net.minecraft.text.Text.literal("Aliases reloaded."), false);
 							return 1;
-					 })
+						})
+				)
+				.then(
+					net.minecraft.server.command.CommandManager.literal("add")
+						.then(
+							net.minecraft.server.command.CommandManager.argument("alias", StringArgumentType.word())
+								.then(
+									net.minecraft.server.command.CommandManager.argument("target", StringArgumentType.greedyString())
+										.executes(ctx -> {
+											String alias = StringArgumentType.getString(ctx, "alias");
+											String target = StringArgumentType.getString(ctx, "target");
+											aliases.put(alias, target);
+											saveAliases();
+											registerAlias(dispatcher, alias, target);
+											ctx.getSource().sendFeedback(() -> net.minecraft.text.Text.literal("Alias /" + alias + " -> " + target + " added."), false);
+											return 1;
+										})
+								)
+						)
+				)
+				.then(
+					net.minecraft.server.command.CommandManager.literal("del")
+						.then(
+							net.minecraft.server.command.CommandManager.argument("alias", StringArgumentType.word())
+								.executes(ctx -> {
+									String alias = StringArgumentType.getString(ctx, "alias");
+									if (aliases.remove(alias) != null) {
+										saveAliases();
+										dispatcher.getRoot().getChildren().removeIf(node -> node.getName().equals(alias));
+										ctx.getSource().sendFeedback(() -> net.minecraft.text.Text.literal("Alias /" + alias + " removed."), false);
+									} else {
+										ctx.getSource().sendFeedback(() -> net.minecraft.text.Text.literal("Alias /" + alias + " not found."), false);
+									}
+									return 1;
+								})
+						)
+				)
+		);
+	}
+
+	// Register /setcmdvariable <variable> <value> command
+	private void registerSetCmdVariable(CommandDispatcher<ServerCommandSource> dispatcher) {
+		dispatcher.register(
+			net.minecraft.server.command.CommandManager.literal("setcmdvariable")
+				.then(net.minecraft.server.command.CommandManager.argument("variable", StringArgumentType.word())
+					.then(net.minecraft.server.command.CommandManager.argument("value", StringArgumentType.greedyString())
+						.executes(ctx -> {
+							String var = StringArgumentType.getString(ctx, "variable");
+							String value = StringArgumentType.getString(ctx, "value");
+							ServerCommandSource source = ctx.getSource();
+							UUID uuid = null;
+							try {
+								uuid = source.getPlayer().getUuid();
+							} catch (Exception e) {
+								source.sendFeedback(() -> net.minecraft.text.Text.literal("Only players can set variables."), false);
+								return 0;
+							}
+							playerVariables.computeIfAbsent(uuid, k -> new HashMap<>()).put(var, value);
+							source.sendFeedback(() -> net.minecraft.text.Text.literal("Set variable ${" + var + "} = " + value), false);
+							return 1;
+						})
 					)
 				)
 		);
 	}
+
 
 	private void registerAliases(CommandDispatcher<ServerCommandSource> dispatcher) {
 		for (Map.Entry<String, String> entry : aliases.entrySet()) {
@@ -88,34 +156,112 @@ public class ExampleMod implements ModInitializer {
 		dispatcher.getRoot().getChildren().removeIf(node -> node.getName().equals(alias));
 		dispatcher.register(
 			net.minecraft.server.command.CommandManager.literal(alias)
-				.executes(ctx -> {
-					ServerCommandSource source = ctx.getSource();
-					CommandDispatcher<ServerCommandSource> cmdDispatcher = source.getServer().getCommandManager().getDispatcher();
-					ParseResults<ServerCommandSource> parsed = cmdDispatcher.parse(target, source);
-					return cmdDispatcher.execute(parsed);
-				})
 				.then(net.minecraft.server.command.CommandManager.argument("args", StringArgumentType.greedyString())
-					.executes(ctx -> {
-						String args = StringArgumentType.getString(ctx, "args");
-						String full = target + " " + args;
-						ServerCommandSource source = ctx.getSource();
-						CommandDispatcher<ServerCommandSource> cmdDispatcher = source.getServer().getCommandManager().getDispatcher();
-						ParseResults<ServerCommandSource> parsed = cmdDispatcher.parse(full, source);
-						return cmdDispatcher.execute(parsed);
-					})
+					.executes(ctx -> executeAlias(alias, ctx))
 				)
+				.executes(ctx -> executeAlias(alias, ctx))
 		);
+	}
+
+	// Execute an alias, supporting multiple commands and argument substitution
+	private int executeAlias(String alias, CommandContext<ServerCommandSource> ctx) {
+		ServerCommandSource source = ctx.getSource();
+		String raw = aliases.get(alias);
+		List<String> commands = new ArrayList<>();
+		try {
+			JsonElement el = JsonParser.parseString(raw);
+			if (el.isJsonArray()) {
+				for (JsonElement e : el.getAsJsonArray()) {
+					commands.add(e.getAsString());
+				}
+			} else if (el.isJsonPrimitive()) {
+				commands.add(el.getAsString());
+			}
+		} catch (Exception e) {
+			LOGGER.error("Failed to parse alias commands for " + alias, e);
+			return 0;
+		}
+		// Parse arguments
+		String args = "";
+		try { args = StringArgumentType.getString(ctx, "args"); } catch (Exception ignored) {}
+		String[] splitArgs = args.isEmpty() ? new String[0] : args.split("\\s+");
+		int result = 1;
+		for (String cmd : commands) {
+			String substituted = substituteVariablesWithArgs(cmd, ctx, splitArgs);
+			CommandDispatcher<ServerCommandSource> cmdDispatcher = source.getServer().getCommandManager().getDispatcher();
+			ParseResults<ServerCommandSource> parsed = cmdDispatcher.parse(substituted, source);
+			try {
+				result = cmdDispatcher.execute(parsed);
+			} catch (com.mojang.brigadier.exceptions.CommandSyntaxException e) {
+				LOGGER.error("Command execution failed for alias: " + alias, e);
+			}
+		}
+		return result;
+	}
+
+	// Substitute variables in the command string, including argument placeholders
+	private String substituteVariablesWithArgs(String command, CommandContext<ServerCommandSource> ctx, String[] splitArgs) {
+		ServerCommandSource source = ctx.getSource();
+		Map<String, String> vars = new HashMap<>();
+		try {
+			vars.put("player", source.getName());
+			vars.put("x", String.valueOf(source.getPosition().x));
+			vars.put("y", String.valueOf(source.getPosition().y));
+			vars.put("z", String.valueOf(source.getPosition().z));
+			UUID uuid = source.getPlayer() != null ? source.getPlayer().getUuid() : null;
+			if (uuid != null && playerVariables.containsKey(uuid)) {
+				vars.putAll(playerVariables.get(uuid));
+			}
+		} catch (Exception ignored) {}
+		// Add argument variables ${1}, ${2}, ...
+		for (int i = 0; i < splitArgs.length; i++) {
+			vars.put(String.valueOf(i + 1), splitArgs[i]);
+		}
+		for (Map.Entry<String, String> entry : vars.entrySet()) {
+			command = command.replace("${" + entry.getKey() + "}", entry.getValue());
+		}
+		return command;
+	}
+
+	// Substitute variables in the command string, e.g. ${player}, ${x}, etc. and custom variables
+	private String substituteVariables(String command, CommandContext<ServerCommandSource> ctx) {
+		ServerCommandSource source = ctx.getSource();
+		Map<String, String> vars = new HashMap<>();
+		try {
+			vars.put("player", source.getName());
+			vars.put("x", String.valueOf(source.getPosition().x));
+			vars.put("y", String.valueOf(source.getPosition().y));
+			vars.put("z", String.valueOf(source.getPosition().z));
+			// Add custom variables for this player
+			UUID uuid = source.getPlayer() != null ? source.getPlayer().getUuid() : null;
+			if (uuid != null && playerVariables.containsKey(uuid)) {
+				vars.putAll(playerVariables.get(uuid));
+			}
+		} catch (Exception ignored) {}
+		for (Map.Entry<String, String> entry : vars.entrySet()) {
+			command = command.replace("${" + entry.getKey() + "}", entry.getValue());
+		}
+		return command;
 	}
 
 	private void loadAliases() {
 		aliases.clear();
 		try {
-			if (Files.exists(CONFIG_PATH)) {
-				String json = Files.readString(CONFIG_PATH);
-				JsonObject obj = JsonParser.parseString(json).getAsJsonObject();
-				for (Map.Entry<String, JsonElement> entry : obj.entrySet()) {
-					aliases.put(entry.getKey(), entry.getValue().getAsString());
-				}
+			if (!Files.exists(CONFIG_PATH)) {
+				ensureConfigExists();
+			}
+			List<String> lines = Files.readAllLines(CONFIG_PATH);
+			StringBuilder jsonBuilder = new StringBuilder();
+			for (String line : lines) {
+				if (line.trim().startsWith("#")) continue;
+				jsonBuilder.append(line).append("\n");
+			}
+			String json = jsonBuilder.toString().trim();
+			if (json.isEmpty() || json.equals("{}")) return;
+			JsonObject obj = JsonParser.parseString(json).getAsJsonObject();
+			for (Map.Entry<String, JsonElement> entry : obj.entrySet()) {
+				// Store as stringified JSON for each alias (could be string or array)
+				aliases.put(entry.getKey(), entry.getValue().toString());
 			}
 		} catch (Exception e) {
 			LOGGER.error("Failed to load aliases config", e);
@@ -125,13 +271,25 @@ public class ExampleMod implements ModInitializer {
 	private void saveAliases() {
 		try {
 			Files.createDirectories(CONFIG_PATH.getParent());
+			List<String> lines = new ArrayList<>();
+			lines.add("# CommandMaker Aliases Config");
+			lines.add("# Each entry is an alias and its command target.");
+			lines.add("# You can use variables like ${player}, ${x}, ${y}, ${z} in the command.");
+			lines.add("# You can use argument variables like ${1}, ${2}, ... for user-supplied arguments.");
+			lines.add("# To run multiple commands, use a JSON array as the value for the alias.");
+			lines.add("# Example:");
+			lines.add("#   teleport: 'tp ${player} 0 100 0'");
+			lines.add("#   greet: 'say Hello, ${player}!'");
+			lines.add("#   kit: ['give ${player} diamond_sword 1', 'give ${player} diamond_helmet 1']");
+			lines.add("#   giveme: 'give ${player} ${1} ${2}'");
 			JsonObject obj = new JsonObject();
 			for (Map.Entry<String, String> entry : aliases.entrySet()) {
-				obj.addProperty(entry.getKey(), entry.getValue());
+				JsonElement el = JsonParser.parseString(entry.getValue());
+				obj.add(entry.getKey(), el);
 			}
-			Files.writeString(CONFIG_PATH, obj.toString(), StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+			lines.add(obj.toString());
+			Files.write(CONFIG_PATH, lines, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
 		} catch (Exception e) {
 			LOGGER.error("Failed to save aliases config", e);
 		}
-	}
-}
+	}}
