@@ -1,3 +1,5 @@
+***THIS MOD IS NO LONGER AVAILABLE HERE, USE THE diamondstar-mods FORK INSTEAD***
+
 # 🧩 Minecraft Command Maker – Fabric 1.21.7
 
 A lightweight, portable command generator mod for Minecraft Fabric servers.  
