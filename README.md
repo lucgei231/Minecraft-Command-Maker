@@ -1,4 +1,4 @@
-***THIS MOD IS NO LONGER AVAILABLE HERE, USE THE diamondstar-mods FORK INSTEAD***
+***THIS MOD IS NO LONGER AVAILABLE HERE, USE THE @diamondstar-mods FORK INSTEAD***
 
 # 🧩 Minecraft Command Maker – Fabric 1.21.7
 
